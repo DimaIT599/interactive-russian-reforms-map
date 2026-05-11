@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Карта реформ и реформаторов России XVIII–XX вв.</title>
+    <link rel="stylesheet" href="style.css" />
+    <script>
+      window.APP_CONFIG = window.APP_CONFIG || {};
+    </script>
+    <script src="config.js"></script>
+    <script defer src="script.js"></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero__content">
+          <p class="hero__eyebrow">Учебный статический проект</p>
+          <h1>Интерактивная карта реформ и реформаторов России XVIII–XX вв.</h1>
+          <p class="hero__lead">
+            Сравнивайте эпохи, отслеживайте реформаторские инициативы на карте и
+            быстро находите ключевые изменения по реформатору, типу и периоду.
+          </p>
+        </div>
+
+        <div class="hero__stats">
+          <article class="stat-card">
+            <span class="stat-card__value" id="total-count">0</span>
+            <span class="stat-card__label">реформ в базе</span>
+          </article>
+          <article class="stat-card">
+            <span class="stat-card__value" id="visible-count">0</span>
+            <span class="stat-card__label">показано на карте</span>
+          </article>
+          <article class="stat-card">
+            <span class="stat-card__value" id="selected-period">Все</span>
+            <span class="stat-card__label">текущий период</span>
+          </article>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel panel--filters">
+          <div class="panel__header">
+            <div>
+              <p class="panel__eyebrow">Навигация</p>
+              <h2>Фильтры</h2>
+            </div>
+            <button class="button button--ghost" id="reset-filters" type="button">
+              Сбросить
+            </button>
+          </div>
+
+          <form class="filters" id="filters-form">
+            <label class="field">
+              <span class="field__label">Реформатор</span>
+              <select id="reformer-filter" name="reformer">
+                <option value="all">Все реформаторы</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span class="field__label">Тип реформы</span>
+              <select id="type-filter" name="type">
+                <option value="all">Все типы</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span class="field__label">Период / век</span>
+              <select id="period-filter" name="period">
+                <option value="all">Все периоды</option>
+              </select>
+            </label>
+          </form>
+
+          <div class="summary-card">
+            <p class="summary-card__title">Сводка выборки</p>
+            <p class="summary-card__text" id="results-summary">
+              Загружаем список реформ...
+            </p>
+          </div>
+
+          <div class="legend" id="type-legend" aria-label="Легенда типов реформ"></div>
+        </section>
+
+        <section class="panel panel--map">
+          <div class="panel__header">
+            <div>
+              <p class="panel__eyebrow">География</p>
+              <h2>Карта реформ</h2>
+            </div>
+            <p class="panel__status" id="map-status">Подготовка карты...</p>
+          </div>
+
+          <div class="map-wrapper">
+            <div id="map"></div>
+            <div class="map-overlay" id="map-overlay">
+              <div class="map-overlay__card">
+                <h3>Карта ещё не загружена</h3>
+                <p id="map-overlay-text">
+                  Подготавливаем данные и подключение к API Яндекс.Карт.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="panel panel--details">
+          <div class="panel__header">
+            <div>
+              <p class="panel__eyebrow">Контекст</p>
+              <h2>Карточка реформы</h2>
+            </div>
+          </div>
+
+          <div class="details-card details-card--empty" id="details-card">
+            <h3>Выберите реформу</h3>
+            <p>
+              Нажмите на метку на карте или выберите реформу из списка ниже, чтобы
+              увидеть её цель, меры и последствия.
+            </p>
+          </div>
+
+          <div class="list-header">
+            <h3>Список реформ</h3>
+            <p id="list-caption">Список будет обновляться по выбранным фильтрам.</p>
+          </div>
+
+          <div class="reform-list" id="reform-list" aria-live="polite"></div>
+        </aside>
+      </main>
+    </div>
+  </body>
+</html>
