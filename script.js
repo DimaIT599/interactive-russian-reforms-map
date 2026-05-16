@@ -7,7 +7,8 @@ const state = {
   map: null,
   ymaps: null,
   clusterer: null,
-  placemarksById: new Map(),
+  connectionLayer: null,
+  reformObjectsById: new Map(),
   selectedId: null
 };
 
@@ -84,7 +85,7 @@ function bindEvents() {
 }
 
 async function loadReforms() {
-  const response = await fetch("reforms.json", { cache: "no-store" });
+  const response = await fetch("reforms.json?v=20260516-1", { cache: "no-store" });
 
   if (!response.ok) {
     throw new Error(`Не удалось загрузить reforms.json: ${response.status}`);
@@ -100,6 +101,9 @@ async function loadReforms() {
 }
 
 function normalizeReform(reform) {
+  const coordinates = normalizeCoordinates(reform.coordinates);
+  const locations = resolveLocations(reform, coordinates);
+
   return {
     id: reform.id,
     name: String(reform.name || "Без названия"),
@@ -109,13 +113,81 @@ function normalizeReform(reform) {
     period: String(reform.period || "Период не указан"),
     type: String(reform.type || "Тип не указан"),
     region: String(reform.region || "Регион не указан"),
-    coordinates: Array.isArray(reform.coordinates) ? reform.coordinates.map(Number) : null,
+    coordinates,
+    locations,
     goal: String(reform.goal || "Цель не указана."),
     measures: String(reform.measures || "Основные меры не указаны."),
     results: String(reform.results || "Последствия не указаны.")
   };
 }
 
+function normalizeCoordinates(rawCoordinates) {
+  if (!Array.isArray(rawCoordinates) || rawCoordinates.length !== 2) {
+    return null;
+  }
+
+  const coordinates = rawCoordinates.map(Number);
+  return hasValidCoordinates(coordinates) ? coordinates : null;
+}
+
+function resolveLocations(reform, fallbackCoordinates) {
+  const explicitLocations = normalizeLocationsArray(reform.locations, reform.region);
+
+  if (explicitLocations.length > 0) {
+    return explicitLocations;
+  }
+
+  if (hasValidCoordinates(fallbackCoordinates)) {
+    return [
+      {
+        name: String(reform.region || "Ключевая точка"),
+        coordinates: [...fallbackCoordinates]
+      }
+    ];
+  }
+
+  return [];
+}
+
+function normalizeLocationsArray(rawLocations, fallbackName) {
+  if (!Array.isArray(rawLocations)) {
+    return [];
+  }
+
+  return rawLocations
+    .map((location, index) => normalizeLocation(location, fallbackName, index))
+    .filter(Boolean);
+}
+
+function normalizeLocation(location, fallbackName, index) {
+  if (Array.isArray(location)) {
+    const coordinates = normalizeCoordinates(location);
+
+    if (!coordinates) {
+      return null;
+    }
+
+    return {
+      name: `${fallbackName || "Точка"} ${index + 1}`,
+      coordinates
+    };
+  }
+
+  if (!location || typeof location !== "object") {
+    return null;
+  }
+
+  const coordinates = normalizeCoordinates(location.coordinates || location.coords);
+
+  if (!coordinates) {
+    return null;
+  }
+
+  return {
+    name: String(location.name || location.title || `${fallbackName || "Точка"} ${index + 1}`),
+    coordinates
+  };
+}
 async function initializeMap(apiKey) {
   setMapStatus("Загружаем Яндекс.Карты...");
 
@@ -133,6 +205,7 @@ async function initializeMap(apiKey) {
       }
     );
 
+    state.connectionLayer = new state.ymaps.GeoObjectCollection();
     state.clusterer = new state.ymaps.Clusterer({
       preset: "islands#invertedDarkBlueClusterIcons",
       groupByCoordinates: false,
@@ -140,6 +213,7 @@ async function initializeMap(apiKey) {
       clusterOpenBalloonOnClick: true
     });
 
+    state.map.geoObjects.add(state.connectionLayer);
     state.map.geoObjects.add(state.clusterer);
     hideMapOverlay();
     setMapStatus("Карта готова.");
@@ -161,7 +235,6 @@ function loadYandexMapsApi(apiKey) {
     return yandexMapsPromise;
   }
 
-  // Подключаем API динамически, чтобы брать ключ из window.APP_CONFIG.
   yandexMapsPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.src = `https://api-maps.yandex.ru/2.1/?apikey=${encodeURIComponent(apiKey)}&lang=ru_RU`;
@@ -220,7 +293,6 @@ function applyFilters() {
   const type = elements.typeFilter.value;
   const period = elements.periodFilter.value;
 
-  // Один и тот же набор фильтров управляет и картой, и списком, и карточкой.
   state.filteredReforms = state.reforms.filter((reform) => {
     const matchesReformer = reformer === "all" || reform.reformer === reformer;
     const matchesType = type === "all" || reform.type === type;
@@ -232,7 +304,7 @@ function applyFilters() {
   elements.visibleCount.textContent = String(state.filteredReforms.length);
   elements.selectedPeriod.textContent = period === "all" ? "Все" : period;
   elements.resultsSummary.textContent = `Показано ${state.filteredReforms.length} из ${state.reforms.length} реформ.`;
-  elements.listCaption.textContent = `В списке отображаются реформы, подходящие под текущие фильтры.`;
+  elements.listCaption.textContent = "Каждая реформа показывает точки, по которым она реально проходила или заметно меняла жизнь.";
 
   renderReformList();
   updateMapMarkers();
@@ -279,7 +351,7 @@ function renderReformList() {
 
     button.innerHTML = `
       <p class="reform-list__title">${escapeHtml(reform.name)}</p>
-      <p class="reform-list__meta">${escapeHtml(reform.reformer)} • ${escapeHtml(reform.region)}</p>
+      <p class="reform-list__meta">${escapeHtml(reform.reformer)} • ${escapeHtml(reform.region)} • ${formatLocationCount(reform.locations.length)}</p>
       <div class="reform-list__footer">
         <span class="chip">${escapeHtml(reform.type)}</span>
         <span class="reform-list__period">${escapeHtml(reform.yearLabel)}</span>
@@ -292,59 +364,149 @@ function renderReformList() {
 }
 
 function updateMapMarkers() {
-  if (!state.map || !state.clusterer) {
+  if (!state.map || !state.clusterer || !state.connectionLayer) {
     return;
   }
 
-  // На каждом изменении фильтра пересобираем видимые метки заново.
   state.clusterer.removeAll();
-  state.placemarksById.clear();
+  state.connectionLayer.removeAll();
+  state.reformObjectsById.clear();
 
-  const placemarks = state.filteredReforms
-    .filter((reform) => hasValidCoordinates(reform.coordinates))
-    .map((reform) => createPlacemark(reform));
+  state.filteredReforms.forEach((reform) => {
+    const mapObjects = createReformGeoObjects(reform);
 
-  state.clusterer.add(placemarks);
+    if (mapObjects.placemarks.length === 0) {
+      return;
+    }
+
+    state.clusterer.add(mapObjects.placemarks);
+    state.reformObjectsById.set(reform.id, mapObjects);
+  });
+
+  applySelectionStyles();
+  renderSelectedConnection();
   fitMapToVisibleReforms();
 }
 
-function createPlacemark(reform) {
+function createReformGeoObjects(reform) {
+  const placemarks = reform.locations
+    .filter((location) => hasValidCoordinates(location.coordinates))
+    .map((location, index) => createPlacemark(reform, location, index));
+
+  const connection = placemarks.length > 1
+    ? createConnection(reform, placemarks.map((placemark) => placemark.geometry.getCoordinates()))
+    : null;
+
+  if (connection) {
+    connection.events.add("click", () => selectReform(reform.id, { centerMap: true }));
+  }
+
+  return { reform, placemarks, connection };
+}
+
+function createPlacemark(reform, location, locationIndex) {
   const placemark = new state.ymaps.Placemark(
-    reform.coordinates,
+    location.coordinates,
     {
-      hintContent: `${escapeHtml(reform.name)} (${escapeHtml(reform.yearLabel)})`,
+      hintContent: `${escapeHtml(reform.name)} • ${escapeHtml(location.name)}`,
       balloonContentHeader: escapeHtml(reform.name),
       clusterCaption: escapeHtml(reform.name),
-      balloonContentBody: createBalloonContent(reform)
+      balloonContentBody: createBalloonContent(reform, location)
     },
-    {
-      preset: "islands#circleDotIcon",
-      iconColor: getTypeColor(reform.type),
-      openBalloonOnClick: true
-    }
+    getPlacemarkOptions(reform.type, false)
   );
 
-  placemark.events.add("click", () => selectReform(reform.id));
-  state.placemarksById.set(reform.id, placemark);
+  placemark.events.add("click", () => {
+    selectReform(reform.id, { focusLocationIndex: locationIndex });
+  });
+
   return placemark;
 }
 
-function fitMapToVisibleReforms() {
-  const visibleCoordinates = state.filteredReforms
-    .map((reform) => reform.coordinates)
-    .filter(hasValidCoordinates);
+function createConnection(reform, coordinates) {
+  return new state.ymaps.Polyline(
+    coordinates,
+    {
+      hintContent: `${escapeHtml(reform.name)} — связанная география реформы`
+    },
+    getConnectionOptions(reform.type, false)
+  );
+}
 
-  if (visibleCoordinates.length === 0) {
+function getPlacemarkOptions(type, isSelected) {
+  const baseColor = getTypeColor(type);
+
+  return {
+    preset: isSelected ? "islands#circleIcon" : "islands#circleDotIcon",
+    iconColor: isSelected ? darkenHexColor(baseColor, 0.18) : baseColor,
+    openBalloonOnClick: true,
+    zIndex: isSelected ? 3000 : 1200
+  };
+}
+
+function getConnectionOptions(type, isSelected) {
+  const baseColor = getTypeColor(type);
+
+  return {
+    strokeColor: hexToRgba(baseColor, isSelected ? 0.95 : 0.42),
+    strokeWidth: isSelected ? 4 : 2,
+    strokeStyle: isSelected ? "solid" : "dash",
+    zIndex: isSelected ? 2200 : 300,
+    interactivityModel: "default#transparent"
+  };
+}
+
+function applySelectionStyles() {
+  state.reformObjectsById.forEach((mapObjects, reformId) => {
+    const isSelected = reformId === state.selectedId;
+
+    mapObjects.placemarks.forEach((placemark) => {
+      placemark.options.set(getPlacemarkOptions(mapObjects.reform.type, isSelected));
+    });
+
+    if (mapObjects.connection) {
+      mapObjects.connection.options.set(getConnectionOptions(mapObjects.reform.type, isSelected));
+    }
+  });
+}
+
+function renderSelectedConnection() {
+  if (!state.connectionLayer) {
+    return;
+  }
+
+  state.connectionLayer.removeAll();
+
+  const selectedObjects = state.selectedId === null ? null : state.reformObjectsById.get(state.selectedId);
+
+  if (selectedObjects && selectedObjects.connection) {
+    state.connectionLayer.add(selectedObjects.connection);
+  }
+}
+
+function fitMapToVisibleReforms() {
+  const visibleCoordinates = state.filteredReforms.flatMap((reform) => getReformCoordinates(reform));
+  fitMapToPoints(visibleCoordinates);
+}
+
+function fitMapToPoints(points) {
+  if (!state.map) {
+    return;
+  }
+
+  const validPoints = points.filter(hasValidCoordinates);
+
+  if (validPoints.length === 0) {
     state.map.setCenter(DEFAULT_CENTER, DEFAULT_ZOOM, { duration: 250 });
     return;
   }
 
-  if (visibleCoordinates.length === 1) {
-    state.map.setCenter(visibleCoordinates[0], 5, { duration: 250 });
+  if (validPoints.length === 1) {
+    state.map.setCenter(validPoints[0], 5, { duration: 250 });
     return;
   }
 
-  const bounds = calculateBounds(visibleCoordinates);
+  const bounds = calculateBounds(validPoints);
 
   if (
     bounds[0][0] === bounds[1][0] &&
@@ -356,7 +518,7 @@ function fitMapToVisibleReforms() {
 
   state.map.setBounds(bounds, {
     checkZoomRange: true,
-    zoomMargin: 40,
+    zoomMargin: 56,
     duration: 250
   });
 }
@@ -372,7 +534,7 @@ function calculateBounds(points) {
 }
 
 function selectReform(reformId, options = {}) {
-  const { centerMap = false, openBalloon = false } = options;
+  const { centerMap = false, openBalloon = false, focusLocationIndex = 0 } = options;
   const reform = state.reforms.find((item) => item.id === reformId);
 
   if (!reform) {
@@ -382,23 +544,34 @@ function selectReform(reformId, options = {}) {
   state.selectedId = reformId;
   renderDetailsCard(reform);
   renderReformList();
+  applySelectionStyles();
+  renderSelectedConnection();
 
-  const placemark = state.placemarksById.get(reformId);
+  const mapObjects = state.reformObjectsById.get(reformId);
 
-  if (placemark && state.map) {
-    if (centerMap) {
-      state.map.setCenter(reform.coordinates, 5, { duration: 250 });
-    }
+  if (!mapObjects || !state.map) {
+    return;
+  }
 
-    if (openBalloon) {
-      placemark.balloon.open();
-    }
+  const targetPlacemark = mapObjects.placemarks[focusLocationIndex] || mapObjects.placemarks[0] || null;
+  const reformCoordinates = getReformCoordinates(reform);
+
+  if (centerMap) {
+    fitMapToPoints(reformCoordinates);
+  }
+
+  if (openBalloon && targetPlacemark) {
+    window.setTimeout(() => {
+      targetPlacemark.balloon.open();
+    }, centerMap ? 320 : 40);
   }
 }
 
 function syncSelectedCard() {
   if (state.selectedId === null) {
     renderEmptyDetails();
+    applySelectionStyles();
+    renderSelectedConnection();
     return;
   }
 
@@ -409,6 +582,9 @@ function syncSelectedCard() {
     renderEmptyDetails();
     renderReformList();
   }
+
+  applySelectionStyles();
+  renderSelectedConnection();
 }
 
 function renderEmptyDetails() {
@@ -416,8 +592,8 @@ function renderEmptyDetails() {
   elements.detailsCard.innerHTML = `
     <h3>Выберите реформу</h3>
     <p>
-      Нажмите на метку на карте или выберите реформу из списка ниже, чтобы
-      изучить её содержание и последствия.
+      Нажмите на точку на карте или выберите реформу из списка ниже, чтобы
+      увидеть её географию влияния и связанные территории.
     </p>
   `;
 }
@@ -435,6 +611,12 @@ function renderDetailsCard(reform) {
     </div>
     <div class="details-card__grid">
       <section class="details-card__section">
+        <p class="details-card__section-title">География влияния</p>
+        <div class="details-card__locations">
+          ${renderLocationChips(reform.locations)}
+        </div>
+      </section>
+      <section class="details-card__section">
         <p class="details-card__section-title">Цель</p>
         <p>${escapeHtml(reform.goal)}</p>
       </section>
@@ -450,19 +632,59 @@ function renderDetailsCard(reform) {
   `;
 }
 
-function createBalloonContent(reform) {
+function renderLocationChips(locations) {
+  if (!locations.length) {
+    return `<p>Для этой реформы пока не задана карта влияния.</p>`;
+  }
+
+  return locations
+    .map((location) => `<span class="chip chip--location">${escapeHtml(location.name)}</span>`)
+    .join("");
+}
+
+function createBalloonContent(reform, location) {
+  const otherLocations = reform.locations
+    .map((item) => item.name)
+    .filter((name) => name !== location.name)
+    .slice(0, 4)
+    .join(", ");
+
+  const connectedText = otherLocations
+    ? `Связанные точки: ${escapeHtml(otherLocations)}.`
+    : "Это основная точка влияния реформы на карте.";
+
   return `
     <article class="balloon-card">
       <h3 class="balloon-card__title">${escapeHtml(reform.name)}</h3>
+      <p class="balloon-card__meta"><strong>Точка на карте:</strong> ${escapeHtml(location.name)}</p>
       <p class="balloon-card__meta"><strong>Реформатор:</strong> ${escapeHtml(reform.reformer)}</p>
       <p class="balloon-card__meta"><strong>Год / период:</strong> ${escapeHtml(reform.yearLabel)} • ${escapeHtml(reform.period)}</p>
       <p class="balloon-card__meta"><strong>Тип:</strong> ${escapeHtml(reform.type)}</p>
-      <p class="balloon-card__meta"><strong>Регион:</strong> ${escapeHtml(reform.region)}</p>
+      <p class="balloon-card__meta"><strong>Охват:</strong> ${escapeHtml(formatLocationCount(reform.locations.length))}</p>
       <p class="balloon-card__text"><strong>Цель:</strong> ${escapeHtml(reform.goal)}</p>
       <p class="balloon-card__text"><strong>Меры:</strong> ${escapeHtml(reform.measures)}</p>
       <p class="balloon-card__text"><strong>Последствия:</strong> ${escapeHtml(reform.results)}</p>
+      <p class="balloon-card__text"><strong>Связь:</strong> ${connectedText}</p>
     </article>
   `;
+}
+
+function getReformCoordinates(reform) {
+  return reform.locations
+    .map((location) => location.coordinates)
+    .filter(hasValidCoordinates);
+}
+
+function formatLocationCount(count) {
+  if (count === 1) {
+    return "1 точка влияния";
+  }
+
+  if (count >= 2 && count <= 4) {
+    return `${count} точки влияния`;
+  }
+
+  return `${count} точек влияния`;
 }
 
 function resetFilters() {
@@ -504,6 +726,34 @@ function getTypeColor(type) {
   }
 
   return "#5f6770";
+}
+
+function darkenHexColor(hex, amount) {
+  const [red, green, blue] = hexToRgb(hex);
+
+  return rgbToHex(
+    Math.max(0, Math.round(red * (1 - amount))),
+    Math.max(0, Math.round(green * (1 - amount))),
+    Math.max(0, Math.round(blue * (1 - amount)))
+  );
+}
+
+function hexToRgba(hex, alpha) {
+  const [red, green, blue] = hexToRgb(hex);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function hexToRgb(hex) {
+  const normalized = hex.replace("#", "");
+  const chunkSize = normalized.length === 3 ? 1 : 2;
+  const channels = normalized.match(new RegExp(`.{${chunkSize}}`, "g")) || [];
+  const values = channels.map((chunk) => Number.parseInt(chunkSize === 1 ? chunk + chunk : chunk, 16));
+
+  return [values[0] || 0, values[1] || 0, values[2] || 0];
+}
+
+function rgbToHex(red, green, blue) {
+  return `#${[red, green, blue].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function getApiKey() {

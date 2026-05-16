@@ -364,9 +364,20 @@ select:hover {
   color: var(--blue);
 }
 
+.chip--location {
+  background: rgba(159, 61, 44, 0.1);
+  color: var(--accent-dark);
+}
+
 .details-card__grid {
   display: grid;
   gap: 12px;
+}
+
+.details-card__locations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .details-card__section {
